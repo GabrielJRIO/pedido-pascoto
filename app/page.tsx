@@ -112,15 +112,33 @@ function LoginScreen({ onLogin }: { onLogin: (user: PortalUser) => void }) {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+    <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-100 via-white to-red-50 px-4">
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-3 flex h-16 w-16 items-center justify-center rounded-2xl bg-[#DC2626] shadow-lg">
-            <span className="text-2xl font-black text-white">P</span>
+          <div className="mx-auto mb-4 flex items-center justify-center">
+            <svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+              {/* Outer orbital ring */}
+              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.25" fill="none"/>
+              {/* Diagonal orbital ring 1 */}
+              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.35" fill="none" transform="rotate(60 48 48)"/>
+              {/* Diagonal orbital ring 2 */}
+              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.35" fill="none" transform="rotate(120 48 48)"/>
+              {/* Blood drop shadow */}
+              <ellipse cx="48" cy="58" rx="10" ry="3.5" fill="#DC2626" fillOpacity="0.15"/>
+              {/* Blood drop body */}
+              <path d="M48 22 C48 22 30 40 30 52 C30 61.9 38.1 70 48 70 C57.9 70 66 61.9 66 52 C66 40 48 22 48 22Z" fill="#DC2626"/>
+              {/* Highlight on drop */}
+              <path d="M40 44 C40 44 37 50 37 54 C37 54 36 48 40 44Z" fill="white" fillOpacity="0.3"/>
+              {/* Orbital dot */}
+              <circle cx="92" cy="48" r="4" fill="#DC2626" fillOpacity="0.6"/>
+              <circle cx="4" cy="48" r="4" fill="#DC2626" fillOpacity="0.6"/>
+            </svg>
           </div>
-          <h1 className="text-2xl font-black text-slate-900">Portal de Pedidos</h1>
-          <p className="mt-1 text-sm text-slate-500">Laboratório Pascoto</p>
+          <h1 className="text-3xl font-black tracking-widest text-slate-900 uppercase">PASCOTO</h1>
+          <p className="mt-1 text-[10px] font-semibold tracking-[0.2em] text-slate-400 uppercase">Laboratório de Análises Clínicas</p>
+          <div className="mx-auto mt-4 h-px w-16 bg-gradient-to-r from-transparent via-red-300 to-transparent"/>
+          <p className="mt-3 text-sm font-medium text-slate-500">Portal de Pedidos</p>
         </div>
 
         <form onSubmit={handleSubmit} className="rounded-2xl bg-white p-8 shadow-lg">
@@ -373,11 +391,15 @@ export default function PortalApp() {
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white shadow-sm">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#DC2626]">
-              <span className="text-sm font-black text-white">P</span>
-            </div>
+            <svg width="36" height="36" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.3" fill="none"/>
+              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.4" fill="none" transform="rotate(60 48 48)"/>
+              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.4" fill="none" transform="rotate(120 48 48)"/>
+              <path d="M48 22 C48 22 30 40 30 52 C30 61.9 38.1 70 48 70 C57.9 70 66 61.9 66 52 C66 40 48 22 48 22Z" fill="#DC2626"/>
+              <path d="M40 44 C40 44 37 50 37 54 C37 54 36 48 40 44Z" fill="white" fillOpacity="0.3"/>
+            </svg>
             <div>
-              <p className="text-sm font-bold text-slate-900">Portal de Pedidos</p>
+              <p className="text-sm font-black tracking-wider text-slate-900 uppercase">Pascoto</p>
               <p className="text-xs text-slate-500">{currentUser.unit} · {currentUser.name}</p>
             </div>
           </div>
