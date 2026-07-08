@@ -12,6 +12,7 @@ type PortalUser = {
   name: string;
   unit: string;
   active: boolean;
+  localityType: string; // 'unidade' | 'posto'
 };
 
 type CatalogMaterial = {
@@ -109,7 +110,7 @@ function LoginScreen({ onLogin }: { onLogin: (user: PortalUser) => void }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const row = data as any;
     if (row.password !== password) { setError("Senha incorreta."); return; }
-    onLogin({ id: row.id, username: row.username, name: row.name, unit: row.unit, password: row.password, active: row.active });
+    onLogin({ id: row.id, username: row.username, name: row.name, unit: row.unit, password: row.password, active: row.active, localityType: row.locality_type || "unidade" });
   }
 
   return (
@@ -315,6 +316,7 @@ export default function PortalApp() {
     const { data: pedData, error: pedErr } = await supabase.from("pedidos").insert({
       numero,
       unit: currentUser.unit,
+      locality_type: currentUser.localityType,
       solicitante_id: currentUser.id,
       solicitante_name: currentUser.name,
       status: "Aguardando aprovação",
