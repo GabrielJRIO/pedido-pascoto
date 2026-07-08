@@ -1144,6 +1144,8 @@ export default function PortalApp() {
                       : pior === "soon" ? { cls: "bg-amber-100 text-amber-700", dot: "🟠", label: "Vence em breve" }
                       : { cls: "bg-emerald-100 text-emerald-700", dot: "🟢", label: "Válido" };
                     const unico = g.lotes.length === 1 ? g.lotes[0] : null;
+                    const minStock = materials.find((m) => m.code === g.code)?.minStock ?? 0;
+                    const abaixoMin = minStock > 0 && g.total <= minStock;
                     return (
                       <button key={g.code} onClick={() => openUso(g.code)}
                         className={`rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:shadow ${pior === "expired" ? "border-red-200" : pior === "soon" ? "border-amber-200" : "border-slate-200 hover:border-[#DC2626]"}`}>
@@ -1158,6 +1160,9 @@ export default function PortalApp() {
                           <p className="mt-2 text-xs text-slate-500">Lote {unico.lot} · validade {fmtVal(unico.expiresAt)}</p>
                         ) : (
                           <p className="mt-2 text-xs font-semibold text-[#DC2626]">Toque para escolher o lote →</p>
+                        )}
+                        {abaixoMin && (
+                          <p className="mt-1.5 rounded-md bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700">🟠 Abaixo do mínimo (mín. {minStock}) — considere solicitar reposição.</p>
                         )}
                       </button>
                     );
@@ -1304,6 +1309,15 @@ export default function PortalApp() {
               )}
               {selStatus?.expired && (
                 <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">🔴 Lote vencido — uso bloqueado. Escolha outro lote.</p>
+              )}
+              {/* Alerta inteligente FEFO — orienta a melhor decisão */}
+              {loteSel && !selStatus?.expired && (
+                usoLoteId === recomendadoId ? (
+                  <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-700">✅ Melhor escolha — este lote vence antes. Priorizá-lo evita perdas.</p>
+                ) : (() => {
+                  const rec = lotes.find((l) => l.id === recomendadoId);
+                  return rec ? <p className="mt-2 rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700">💡 Dica FEFO: existe outro lote com vencimento anterior (lote {rec.lot}, vence {fmtVal(rec.expiresAt)}). Considere usá-lo primeiro.</p> : null;
+                })()
               )}
 
               <label className="mb-1 mt-4 block text-xs font-semibold text-slate-500">Quantidade usada *</label>
