@@ -20,6 +20,7 @@ type CatalogMaterial = {
   name: string;
   category: string;
   unit: string; // unidade de medida
+  minStock: number;
 };
 
 type CartItem = {
@@ -258,7 +259,7 @@ export default function PortalApp() {
   async function loadData(user: PortalUser) {
     setLoadingData(true);
     const [matRes, pedRes] = await Promise.all([
-      supabase.from("materials").select("code,name,category").eq("disponivel_para_pedido", true).order("name"),
+      supabase.from("materials").select("code,name,category,min_stock,minimum_quantity").eq("disponivel_para_pedido", true).order("name"),
       supabase.from("pedidos").select("*, pedido_itens(*)").eq("unit", user.unit).order("created_at", { ascending: false }).limit(100),
     ]);
 
@@ -269,6 +270,7 @@ export default function PortalApp() {
         name: m.name,
         category: m.category || "Outros",
         unit: m.unit_of_measure || "un",
+        minStock: Number(m.min_stock ?? m.minimum_quantity ?? 0),
       })));
     }
 
@@ -659,16 +661,73 @@ export default function PortalApp() {
         {view === "inicio" && (() => {
           const hora = new Date().getHours();
           const saud = hora < 12 ? "Bom dia" : hora < 18 ? "Boa tarde" : "Boa noite";
-          const nMateriais = new Set(localBatches.map((b) => b.materialCode)).size;
-          const nAguardando = pedidos.filter((p) => p.status === "Aguardando aprovação").length;
-          const nReceber = remessasList.filter((r) => !["Recebida", "Cancelada"].includes(r.status)).length;
           const primeiroNome = currentUser.name.split(" ")[0];
+          // ── Saúde da unidade ──
+          const saldoByMat: Record<string, number> = {};
+          localBatches.forEach((b) => { saldoByMat[b.materialCode] = (saldoByMat[b.materialCode] ?? 0) + b.quantity; });
+          const nMateriais = Object.keys(saldoByMat).length;
+          const vencidos = localBatches.filter((b) => batchStatus(b.expiresAt).expired).length;
+          const vencendo = localBatches.filter((b) => batchStatus(b.expiresAt).soon).length;
+          const abaixoMin = materials.filter((m) => { const s = saldoByMat[m.code] ?? 0; return s > 0 && m.minStock > 0 && s <= m.minStock; }).length;
+          const nReceber = remessasList.filter((r) => !["Recebida", "Cancelada"].includes(r.status)).length;
+          const emAndamento = pedidos.filter((p) => !["Recebido", "Cancelado", "Rejeitado"].includes(p.status)).length;
+          const nAguardando = pedidos.filter((p) => p.status === "Aguardando aprovação").length;
+          const nivel: "red" | "amber" | "green" = vencidos > 0 ? "red" : (abaixoMin > 0 || vencendo > 0) ? "amber" : "green";
+          const painel = {
+            red: { bg: "bg-red-50", ring: "ring-red-200", txt: "text-red-700", label: "🔴 Atenção necessária" },
+            amber: { bg: "bg-amber-50", ring: "ring-amber-200", txt: "text-amber-700", label: "🟠 Requer atenção" },
+            green: { bg: "bg-emerald-50", ring: "ring-emerald-200", txt: "text-emerald-700", label: "🟢 Estoque saudável" },
+          }[nivel];
+          const alertas: { icon: string; txt: string }[] = [];
+          if (vencidos > 0) alertas.push({ icon: "🔴", txt: `${vencidos} lote${vencidos > 1 ? "s" : ""} vencido${vencidos > 1 ? "s" : ""}` });
+          if (abaixoMin > 0) alertas.push({ icon: "🟠", txt: `${abaixoMin} material${abaixoMin > 1 ? "is" : ""} abaixo do mínimo` });
+          if (vencendo > 0) alertas.push({ icon: "🟠", txt: `${vencendo} lote${vencendo > 1 ? "s" : ""} vencendo em breve` });
+          if (nReceber > 0) alertas.push({ icon: "🚚", txt: `${nReceber} remessa${nReceber > 1 ? "s" : ""} aguardando confirmação` });
+          if (emAndamento > 0) alertas.push({ icon: "📝", txt: `${emAndamento} solicitaç${emAndamento > 1 ? "ões" : "ão"} em andamento` });
+
+          const acoes = [
+            { icon: "📝", label: "Solicitar Material", on: () => { setView("catalog"); } },
+            { icon: "📦", label: "Utilizar Material", on: () => { loadLocalStock(currentUser); setView("estoque"); } },
+            { icon: "🚚", label: "Receber Remessa", on: () => { loadRemessas(currentUser); setView("remessas"); } },
+            { icon: "🔎", label: "Consultar Estoque", on: () => { loadLocalStock(currentUser); setView("estoque"); } },
+          ];
+
           return (
             <div className="space-y-5">
               <div>
                 <h1 className="text-2xl font-black text-slate-900">{saud}, {primeiroNome}</h1>
                 <p className="mt-0.5 text-sm text-slate-500">📍 Unidade: <span className="font-semibold text-slate-700">{currentUser.unit}</span></p>
               </div>
+
+              {/* Painel de Saúde — situação da unidade em 1 relance */}
+              <div className={`rounded-2xl p-5 ring-1 ${painel.bg} ${painel.ring}`}>
+                <p className={`text-lg font-black ${painel.txt}`}>{painel.label}</p>
+                {alertas.length > 0 ? (
+                  <div className="mt-3 space-y-1.5">
+                    {alertas.map((a, i) => (
+                      <p key={i} className="flex items-center gap-2 text-sm font-medium text-slate-700"><span>{a.icon}</span> {a.txt}</p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-slate-600">Nenhuma ação necessária no momento. Tudo em ordem. ✅</p>
+                )}
+              </div>
+
+              {/* Ações rápidas — o que ele mais faz no dia */}
+              <div>
+                <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Ações rápidas</p>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  {acoes.map((a) => (
+                    <button key={a.label} onClick={a.on}
+                      className="flex flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm transition hover:border-[#DC2626] hover:shadow">
+                      <span className="text-2xl">{a.icon}</span>
+                      <span className="text-sm font-bold text-slate-800">{a.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-400">Minha unidade</p>
               <div className="grid gap-3 sm:grid-cols-2">
                 <button onClick={() => { loadLocalStock(currentUser); setView("estoque"); }}
                   className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
