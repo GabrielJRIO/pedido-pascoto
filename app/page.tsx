@@ -60,6 +60,7 @@ type Pedido = {
   createdAt: string;
   approvedBy: string;
   approvedAt: string;
+  recebimentoStatus: string;
 };
 
 // ─── Status config ──────────────────────────────────────────────────────────
@@ -193,6 +194,11 @@ export default function PortalApp() {
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [confirmingReceipt, setConfirmingReceipt] = useState(false);
+  const [divergenceOpen, setDivergenceOpen] = useState(false);
+  const [divergencePedidoId, setDivergencePedidoId] = useState<string | null>(null);
+  const [divergenceType, setDivergenceType] = useState("");
+  const [divergenceDesc, setDivergenceDesc] = useState("");
+  const [savingDivergence, setSavingDivergence] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   const [scanInput, setScanInput] = useState("");
@@ -238,6 +244,7 @@ export default function PortalApp() {
       approvedBy: r.approved_by || "",
       approvedAt: r.approved_at ? new Date(r.approved_at).toLocaleString("pt-BR") : "",
       createdAt: new Date(r.created_at).toLocaleString("pt-BR"),
+      recebimentoStatus: r.recebimento_status || "",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       itens: (r.pedido_itens ?? []).map((i: any) => ({
         id: i.id,
@@ -339,6 +346,7 @@ export default function PortalApp() {
       status: "Aguardando aprovação", observacoes: obsGeral,
       approvedBy: "", approvedAt: "",
       createdAt: new Date().toLocaleString("pt-BR"),
+      recebimentoStatus: "",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       itens: (itensData ?? []).map((i: any) => ({
         id: i.id, materialCode: i.material_code, materialName: i.material_name,
@@ -384,6 +392,35 @@ export default function PortalApp() {
     showToast("Recebimento confirmado! Obrigado.");
   }
 
+  function openDivergence(pedidoId: string) {
+    setDivergencePedidoId(pedidoId);
+    setDivergenceType("");
+    setDivergenceDesc("");
+    setDivergenceOpen(true);
+  }
+
+  // Divergência NÃO finaliza recebimento nem mexe em estoque — abre pendência pra Gestão analisar.
+  async function handleReportDivergence() {
+    if (!currentUser || !divergencePedidoId) return;
+    if (!divergenceType) { showToast("Escolha o tipo de divergência."); return; }
+    setSavingDivergence(true);
+    const { error } = await supabase.from("pedido_divergencias").insert({
+      pedido_id: divergencePedidoId,
+      tipo: divergenceType,
+      descricao: divergenceDesc.trim() || null,
+      status: "aberta",
+      criado_por: currentUser.name,
+    });
+    if (!error) {
+      await supabase.from("pedidos").update({ recebimento_status: "divergencia" }).eq("id", divergencePedidoId);
+    }
+    setSavingDivergence(false);
+    if (error) { showToast("Não foi possível registrar. Tente novamente."); return; }
+    setPedidos((prev) => prev.map((p) => p.id === divergencePedidoId ? { ...p, recebimentoStatus: "divergencia" } : p));
+    setDivergenceOpen(false);
+    showToast("Divergência registrada. A Gestão vai analisar.");
+  }
+
   // Catalog filtering
   const categories = useMemo(() => {
     const cats = Array.from(new Set(materials.map((m) => m.category))).sort();
@@ -405,6 +442,49 @@ export default function PortalApp() {
   return (
     <div className="min-h-screen bg-slate-50">
       {toast && <Toast msg={toast.msg} ok={toast.ok} />}
+
+      {/* ── Modal de divergência ── */}
+      {divergenceOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4">
+          <div className="w-full max-w-md rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-2xl">
+            <h3 className="text-lg font-bold text-slate-900">Recebi com divergência</h3>
+            <p className="mt-1 text-sm text-slate-500">Conte o que houve. A Gestão vai analisar antes de finalizar.</p>
+
+            <label className="mt-4 block text-xs font-semibold text-slate-500">Tipo de divergência *</label>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {[
+                { v: "faltando", l: "Item faltando" },
+                { v: "qty_errada", l: "Quantidade errada" },
+                { v: "produto_errado", l: "Produto errado" },
+                { v: "lote_divergente", l: "Lote divergente" },
+                { v: "danificado", l: "Material danificado" },
+                { v: "outro", l: "Outro" },
+              ].map((opt) => (
+                <button key={opt.v} type="button" onClick={() => setDivergenceType(opt.v)}
+                  className={`rounded-xl border px-3 py-2.5 text-sm font-medium transition ${divergenceType === opt.v ? "border-amber-500 bg-amber-50 text-amber-800 ring-1 ring-amber-200" : "border-slate-200 text-slate-700 hover:border-slate-300"}`}>
+                  {opt.l}
+                </button>
+              ))}
+            </div>
+
+            <label className="mt-4 block text-xs font-semibold text-slate-500">Descrição (opcional)</label>
+            <textarea value={divergenceDesc} onChange={(e) => setDivergenceDesc(e.target.value)} rows={3}
+              placeholder="Ex: chegaram 80 luvas em vez de 100; uma caixa veio molhada..."
+              className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm" />
+
+            <div className="mt-5 flex gap-2">
+              <button type="button" onClick={() => setDivergenceOpen(false)}
+                className="flex-1 rounded-xl border border-slate-300 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                Cancelar
+              </button>
+              <button type="button" disabled={savingDivergence} onClick={handleReportDivergence}
+                className="flex-1 rounded-xl bg-amber-600 py-3 text-sm font-bold text-white hover:bg-amber-700 disabled:opacity-50">
+                {savingDivergence ? "Registrando..." : "Registrar divergência"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Top nav ── */}
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white shadow-sm">
@@ -739,13 +819,24 @@ export default function PortalApp() {
                     )}
                   </div>
 
-                  {ped.status === "Enviado" && (
+                  {ped.status === "Enviado" && ped.recebimentoStatus === "divergencia" && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-center">
+                      <p className="text-sm font-bold text-amber-700">⚠ Divergência registrada</p>
+                      <p className="mt-1 text-xs text-amber-600">Em análise pela Gestão.</p>
+                    </div>
+                  )}
+
+                  {ped.status === "Enviado" && ped.recebimentoStatus !== "divergencia" && (
                     <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-4">
                       <p className="mb-1 text-sm font-bold text-emerald-800">Chegou até você?</p>
                       <p className="mb-3 text-xs text-emerald-700">Confirme o recebimento quando o material chegar em {ped.unit}.</p>
                       <button disabled={confirmingReceipt} onClick={() => { if (confirm(`Confirmar que recebeu o pedido ${ped.numero}?`)) handleConfirmReceipt(ped.id); }}
                         className="w-full rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
                         {confirmingReceipt ? "Confirmando..." : "✓ Confirmar Recebimento"}
+                      </button>
+                      <button onClick={() => openDivergence(ped.id)}
+                        className="mt-2 w-full rounded-xl border border-amber-300 py-2.5 text-sm font-semibold text-amber-700 hover:bg-amber-50">
+                        Recebi com divergência
                       </button>
                     </div>
                   )}
