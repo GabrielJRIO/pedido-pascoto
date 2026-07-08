@@ -192,6 +192,7 @@ export default function PortalApp() {
   const [obsGeral, setObsGeral] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [confirmingReceipt, setConfirmingReceipt] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   const [scanInput, setScanInput] = useState("");
@@ -363,6 +364,24 @@ export default function PortalApp() {
     setCancelling(false);
     setView("orders");
     showToast("Pedido cancelado.");
+  }
+
+  // Destino confirma o recebimento. NÃO mexe em estoque — a Gestão finaliza a baixa.
+  async function handleConfirmReceipt(pedidoId: string) {
+    if (!currentUser) return;
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido || pedido.status !== "Enviado") return;
+    setConfirmingReceipt(true);
+    const { error } = await supabase.from("pedidos").update({
+      status: "Recebido",
+      recebido_por: currentUser.name,
+      recebido_em: new Date().toISOString(),
+      recebimento_status: "confirmado",
+    }).eq("id", pedidoId);
+    setConfirmingReceipt(false);
+    if (error) { showToast("Não foi possível confirmar. Tente novamente."); return; }
+    setPedidos((prev) => prev.map((p) => p.id === pedidoId ? { ...p, status: "Recebido" } : p));
+    showToast("Recebimento confirmado! Obrigado.");
   }
 
   // Catalog filtering
@@ -719,6 +738,23 @@ export default function PortalApp() {
                       </p>
                     )}
                   </div>
+
+                  {ped.status === "Enviado" && (
+                    <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-4">
+                      <p className="mb-1 text-sm font-bold text-emerald-800">Chegou até você?</p>
+                      <p className="mb-3 text-xs text-emerald-700">Confirme o recebimento quando o material chegar em {ped.unit}.</p>
+                      <button disabled={confirmingReceipt} onClick={() => { if (confirm(`Confirmar que recebeu o pedido ${ped.numero}?`)) handleConfirmReceipt(ped.id); }}
+                        className="w-full rounded-xl bg-emerald-600 py-3 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+                        {confirmingReceipt ? "Confirmando..." : "✓ Confirmar Recebimento"}
+                      </button>
+                    </div>
+                  )}
+
+                  {ped.status === "Recebido" && (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
+                      <p className="text-sm font-bold text-emerald-700">✓ Recebimento confirmado</p>
+                    </div>
+                  )}
 
                   {ped.status === "Aguardando aprovação" && (
                     <button disabled={cancelling} onClick={() => { if (confirm("Cancelar este pedido?")) handleCancelPedido(ped.id); }}
