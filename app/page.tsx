@@ -376,22 +376,23 @@ export default function PortalApp() {
     showToast("Pedido cancelado.");
   }
 
-  // Destino confirma o recebimento. NÃO mexe em estoque — a Gestão finaliza a baixa.
+  // Destino confirma o recebimento. NÃO mexe em estoque e NÃO finaliza o pedido —
+  // apenas SINALIZA à Gestão que o destino confirmou. O "Recebido" (e a baixa de
+  // estoque) só acontecem quando a Gestão finaliza a remessa.
   async function handleConfirmReceipt(pedidoId: string) {
     if (!currentUser) return;
     const pedido = pedidos.find((p) => p.id === pedidoId);
     if (!pedido || pedido.status !== "Enviado") return;
     setConfirmingReceipt(true);
     const { error } = await supabase.from("pedidos").update({
-      status: "Recebido",
       recebido_por: currentUser.name,
       recebido_em: new Date().toISOString(),
       recebimento_status: "confirmado",
     }).eq("id", pedidoId);
     setConfirmingReceipt(false);
     if (error) { showToast("Não foi possível confirmar. Tente novamente."); return; }
-    setPedidos((prev) => prev.map((p) => p.id === pedidoId ? { ...p, status: "Recebido" } : p));
-    showToast("Recebimento confirmado! Obrigado.");
+    setPedidos((prev) => prev.map((p) => p.id === pedidoId ? { ...p, recebimentoStatus: "confirmado" } : p));
+    showToast("Recebimento confirmado! A Matriz vai finalizar.");
   }
 
   function openDivergence(pedidoId: string) {
@@ -828,7 +829,7 @@ export default function PortalApp() {
                     </div>
                   )}
 
-                  {ped.status === "Enviado" && ped.recebimentoStatus !== "divergencia" && (
+                  {ped.status === "Enviado" && ped.recebimentoStatus !== "divergencia" && ped.recebimentoStatus !== "confirmado" && (
                     <div className="rounded-2xl border-2 border-emerald-200 bg-emerald-50 p-4">
                       <p className="mb-1 text-sm font-bold text-emerald-800">Chegou até você?</p>
                       <p className="mb-3 text-xs text-emerald-700">Confirme o recebimento quando o material chegar em {ped.unit}.</p>
@@ -843,9 +844,16 @@ export default function PortalApp() {
                     </div>
                   )}
 
-                  {ped.status === "Recebido" && (
+                  {ped.status === "Enviado" && ped.recebimentoStatus === "confirmado" && (
                     <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
                       <p className="text-sm font-bold text-emerald-700">✓ Recebimento confirmado</p>
+                      <p className="mt-1 text-xs text-emerald-600">Aguardando a Matriz finalizar a remessa.</p>
+                    </div>
+                  )}
+
+                  {ped.status === "Recebido" && (
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center">
+                      <p className="text-sm font-bold text-emerald-700">✓ Recebido e finalizado</p>
                     </div>
                   )}
 
