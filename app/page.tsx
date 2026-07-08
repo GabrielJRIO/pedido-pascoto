@@ -31,6 +31,15 @@ type CartItem = {
   observacao: string;
 };
 
+type LocalBatch = {
+  id: string;
+  materialCode: string;
+  materialName: string;
+  lot: string;
+  expiresAt: string; // 'yyyy-mm-dd'
+  quantity: number;
+};
+
 type PedidoStatus =
   | "Aguardando aprovação"
   | "Aprovado"
@@ -189,7 +198,13 @@ export default function PortalApp() {
   const [materials, setMaterials] = useState<CatalogMaterial[]>([]);
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [view, setView] = useState<"catalog" | "cart" | "orders" | "detail">("catalog");
+  const [view, setView] = useState<"catalog" | "cart" | "orders" | "detail" | "estoque">("catalog");
+  const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
+  const [usoMat, setUsoMat] = useState<string | null>(null);
+  const [usoLoteId, setUsoLoteId] = useState("");
+  const [usoQty, setUsoQty] = useState("");
+  const [usoObs, setUsoObs] = useState("");
+  const [usando, setUsando] = useState(false);
   const [selectedPedido, setSelectedPedido] = useState<Pedido | null>(null);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("Todos");
@@ -232,7 +247,59 @@ export default function PortalApp() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setPedidos((pedRes.data as any[]).map(mapPedido));
     }
+    await loadLocalStock(user);
     setLoadingData(false);
+  }
+
+  // Estoque local da própria localidade, por lote (ordem FEFO)
+  async function loadLocalStock(user: PortalUser) {
+    const { data, error } = await supabase
+      .from("material_batches")
+      .select("id, material_code, lot, expires_at, quantity_current, materials(name)")
+      .eq("unit", user.unit)
+      .eq("status", "ativo")
+      .gt("quantity_current", 0)
+      .order("expires_at", { ascending: true });
+    if (error) { console.warn("Estoque local indisponível (grant material_batches?):", error.message); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setLocalBatches((data as any[]).map((b) => ({
+      id: b.id,
+      materialCode: b.material_code,
+      materialName: b.materials?.name || b.material_code,
+      lot: b.lot || "—",
+      expiresAt: b.expires_at || "",
+      quantity: Number(b.quantity_current || 0),
+    })));
+  }
+
+  function openUso(materialCode: string) {
+    const lotes = localBatches.filter((b) => b.materialCode === materialCode);
+    setUsoMat(materialCode);
+    setUsoLoteId(lotes[0]?.id ?? ""); // FEFO (já vem ordenado) — auto-seleciona o primeiro
+    setUsoQty("");
+    setUsoObs("");
+  }
+
+  // Registra uso local via RPC transacional (baixa no lote correto)
+  async function handleUsarMaterial() {
+    if (!currentUser || !usoMat) return;
+    const lote = localBatches.find((b) => b.id === usoLoteId);
+    if (!lote) { showToast("Selecione o lote.", false); return; }
+    const qty = Number(usoQty);
+    if (!qty || qty <= 0) { showToast("Informe a quantidade usada.", false); return; }
+    if (qty > lote.quantity) { showToast(`Máximo disponível neste lote: ${lote.quantity}`, false); return; }
+    setUsando(true);
+    const { data, error } = await supabase.rpc("registrar_uso_local", {
+      p_material_code: usoMat, p_unit: currentUser.unit, p_batch_id: lote.id,
+      p_qty: qty, p_responsavel: currentUser.name, p_obs: usoObs.trim() || null,
+    });
+    setUsando(false);
+    if (error) { showToast("Erro ao registrar uso: " + error.message, false); return; }
+    const res = data as { ok?: boolean; error?: string } | null;
+    if (!res?.ok) { showToast(res?.error || "Não foi possível registrar o uso.", false); return; }
+    showToast("Uso registrado! Estoque atualizado.");
+    setUsoMat(null);
+    await loadLocalStock(currentUser);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -520,6 +587,9 @@ export default function PortalApp() {
             </button>
             <button onClick={() => { loadData(currentUser); setView("orders"); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${view === "orders" || view === "detail" ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
               Meus Pedidos
+            </button>
+            <button onClick={() => { loadLocalStock(currentUser); setView("estoque"); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${view === "estoque" ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+              Estoque
             </button>
             <button onClick={handleLogout} className="ml-2 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100">
               Sair
@@ -870,7 +940,106 @@ export default function PortalApp() {
             </div>
           );
         })()}
+
+        {/* ═══════════════ ESTOQUE LOCAL ═══════════════ */}
+        {view === "estoque" && (() => {
+          const grupos = Object.values(
+            localBatches.reduce((acc: Record<string, { code: string; name: string; total: number; lotes: number }>, b) => {
+              acc[b.materialCode] ??= { code: b.materialCode, name: b.materialName, total: 0, lotes: 0 };
+              acc[b.materialCode].total += b.quantity;
+              acc[b.materialCode].lotes += 1;
+              return acc;
+            }, {}),
+          ).sort((a, b) => a.name.localeCompare(b.name));
+
+          return (
+            <div>
+              <div className="mb-5">
+                <h1 className="text-xl font-bold text-slate-900">Estoque — {currentUser.unit}</h1>
+                <p className="text-sm text-slate-500">Toque em um material para registrar o uso.</p>
+              </div>
+
+              {grupos.length === 0 ? (
+                <div className="rounded-2xl border-2 border-dashed border-slate-200 py-16 text-center">
+                  <p className="text-lg font-semibold text-slate-400">Nenhum material em estoque</p>
+                  <p className="mt-1 text-sm text-slate-400">O estoque aparece quando a Matriz finalizar uma remessa para {currentUser.unit}.</p>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {grupos.map((g) => (
+                    <button key={g.code} onClick={() => openUso(g.code)}
+                      className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-slate-900">{g.name}</p>
+                        <p className="text-xs text-slate-400">{g.lotes} lote{g.lotes > 1 ? "s" : ""} · toque para usar</p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-2xl font-black text-slate-900">{g.total}</p>
+                        <p className="text-[10px] text-slate-400">disponível</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </main>
+
+      {/* ─── Modal: Usar material ─── */}
+      {usoMat && (() => {
+        const lotes = localBatches.filter((b) => b.materialCode === usoMat);
+        const nome = lotes[0]?.materialName ?? usoMat;
+        const loteSel = localBatches.find((b) => b.id === usoLoteId);
+        return (
+          <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 sm:items-center" onClick={() => setUsoMat(null)}>
+            <div className="w-full max-w-md rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+              <div className="mb-4 flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-[#DC2626]">Registrar uso</p>
+                  <h3 className="text-lg font-bold text-slate-900">{nome}</h3>
+                </div>
+                <button onClick={() => setUsoMat(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">✕</button>
+              </div>
+
+              {/* Seleção de lote (auto se só houver 1) */}
+              <label className="mb-1 block text-xs font-semibold text-slate-500">
+                {lotes.length > 1 ? "Escolha o lote *" : "Lote"}
+              </label>
+              <div className="space-y-1.5">
+                {lotes.map((l, i) => (
+                  <button key={l.id} type="button" onClick={() => setUsoLoteId(l.id)}
+                    className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-sm transition ${usoLoteId === l.id ? "border-[#DC2626] bg-red-50 ring-1 ring-red-200" : "border-slate-200 hover:border-slate-300"}`}>
+                    <span>
+                      <span className="font-semibold text-slate-800">Lote {l.lot}</span>
+                      {i === 0 && lotes.length > 1 && <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-bold text-green-700">vence antes</span>}
+                      <span className="block text-xs text-slate-500">Validade {l.expiresAt ? l.expiresAt.split("-").reverse().join("/") : "—"}</span>
+                    </span>
+                    <span className="shrink-0 font-bold text-slate-900">{l.quantity} un</span>
+                  </button>
+                ))}
+              </div>
+
+              <label className="mb-1 mt-4 block text-xs font-semibold text-slate-500">Quantidade usada *</label>
+              <input type="number" min={1} max={loteSel?.quantity} value={usoQty}
+                onChange={(e) => setUsoQty(e.target.value)} placeholder="0"
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm" />
+              {loteSel && Number(usoQty) > loteSel.quantity && (
+                <p className="mt-1 text-xs font-semibold text-red-600">Máximo disponível neste lote: {loteSel.quantity}</p>
+              )}
+
+              <label className="mb-1 mt-3 block text-xs font-semibold text-slate-500">Observação (opcional)</label>
+              <input value={usoObs} onChange={(e) => setUsoObs(e.target.value)} placeholder="Ex.: usado no setor X"
+                className="w-full rounded-xl border border-slate-300 px-4 py-2.5 text-sm" />
+
+              <button disabled={usando} onClick={handleUsarMaterial}
+                className="mt-5 w-full rounded-xl bg-[#DC2626] py-3 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50">
+                {usando ? "Registrando..." : "Confirmar uso"}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Footer */}
       <footer className="mt-10 border-t border-slate-200 py-6 text-center text-xs text-slate-400">
