@@ -229,7 +229,7 @@ export default function PortalApp() {
   async function loadData(user: PortalUser) {
     setLoadingData(true);
     const [matRes, pedRes] = await Promise.all([
-      supabase.from("materials").select("code,name,category,unit_of_measure").eq("disponivel_para_pedido", true).order("name"),
+      supabase.from("materials").select("code,name,category").eq("disponivel_para_pedido", true).order("name"),
       supabase.from("pedidos").select("*, pedido_itens(*)").eq("unit", user.unit).order("created_at", { ascending: false }).limit(100),
     ]);
 
