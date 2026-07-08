@@ -40,6 +40,15 @@ type LocalBatch = {
   quantity: number;
 };
 
+type PortalRemessa = {
+  id: string;
+  numero: string;
+  status: string;
+  createdAt: string;
+  pedidoId: string | null;
+  itens: { materialName: string; quantidade: number; lote: string; validade: string }[];
+};
+
 type PedidoStatus =
   | "Aguardando aprovação"
   | "Aprovado"
@@ -198,8 +207,9 @@ export default function PortalApp() {
   const [materials, setMaterials] = useState<CatalogMaterial[]>([]);
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [view, setView] = useState<"catalog" | "cart" | "orders" | "detail" | "estoque">("catalog");
+  const [view, setView] = useState<"inicio" | "catalog" | "cart" | "orders" | "detail" | "estoque" | "remessas" | "historico">("inicio");
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
+  const [remessasList, setRemessasList] = useState<PortalRemessa[]>([]);
   const [usoMat, setUsoMat] = useState<string | null>(null);
   const [usoLoteId, setUsoLoteId] = useState("");
   const [usoQty, setUsoQty] = useState("");
@@ -248,24 +258,42 @@ export default function PortalApp() {
       setPedidos((pedRes.data as any[]).map(mapPedido));
     }
     await loadLocalStock(user);
+    await loadRemessas(user);
     setLoadingData(false);
   }
 
-  // Estoque local da própria localidade, por lote (ordem FEFO)
-  async function loadLocalStock(user: PortalUser) {
+  // Remessas enviadas para a própria localidade
+  async function loadRemessas(user: PortalUser) {
     const { data, error } = await supabase
-      .from("material_batches")
-      .select("id, material_code, lot, expires_at, quantity_current, materials(name)")
-      .eq("unit", user.unit)
-      .eq("status", "ativo")
-      .gt("quantity_current", 0)
-      .order("expires_at", { ascending: true });
-    if (error) { console.warn("Estoque local indisponível (grant material_batches?):", error.message); return; }
+      .from("remessas")
+      .select("id,numero,status,created_at,pedido_id, remessa_itens(material_name,quantidade,lote,validade)")
+      .eq("destino", user.unit)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) { console.warn("Remessas indisponíveis:", error.message); return; }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    setLocalBatches((data as any[]).map((b) => ({
+    setRemessasList(((data ?? []) as any[]).map((r) => ({
+      id: r.id,
+      numero: r.numero,
+      status: r.status,
+      createdAt: r.created_at ? new Date(r.created_at).toLocaleString("pt-BR") : "",
+      pedidoId: r.pedido_id ?? null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      itens: (r.remessa_itens ?? []).map((i: any) => ({
+        materialName: i.material_name, quantidade: i.quantidade, lote: i.lote || "—", validade: i.validade || "",
+      })),
+    })));
+  }
+
+  // Estoque local da própria localidade, por lote (ordem FEFO) — via RPC (chave restrita não lê a tabela direto)
+  async function loadLocalStock(user: PortalUser) {
+    const { data, error } = await supabase.rpc("estoque_local", { p_unit: user.unit });
+    if (error) { console.warn("Estoque local indisponível (rode a RPC estoque_local):", error.message); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setLocalBatches(((data ?? []) as any[]).map((b) => ({
       id: b.id,
       materialCode: b.material_code,
-      materialName: b.materials?.name || b.material_code,
+      materialName: b.material_name || b.material_code,
       lot: b.lot || "—",
       expiresAt: b.expires_at || "",
       quantity: Number(b.quantity_current || 0),
@@ -560,45 +588,102 @@ export default function PortalApp() {
 
       {/* ── Top nav ── */}
       <header className="sticky top-0 z-20 border-b border-slate-200 bg-white shadow-sm">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-3">
-            <svg width="36" height="36" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.3" fill="none"/>
-              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.4" fill="none" transform="rotate(60 48 48)"/>
-              <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.4" fill="none" transform="rotate(120 48 48)"/>
-              <path d="M48 22 C48 22 30 40 30 52 C30 61.9 38.1 70 48 70 C57.9 70 66 61.9 66 52 C66 40 48 22 48 22Z" fill="#DC2626"/>
-              <path d="M40 44 C40 44 37 50 37 54 C37 54 36 48 40 44Z" fill="white" fillOpacity="0.3"/>
-            </svg>
-            <div>
-              <p className="text-sm font-black tracking-wider text-slate-900 uppercase">Pascoto</p>
-              <p className="text-xs text-slate-500">{currentUser.unit} · {currentUser.name}</p>
+        <div className="mx-auto max-w-5xl px-4 py-3">
+          {/* Identidade */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <svg width="36" height="36" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.3" fill="none"/>
+                <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.4" fill="none" transform="rotate(60 48 48)"/>
+                <ellipse cx="48" cy="48" rx="44" ry="18" stroke="#DC2626" strokeWidth="2.5" strokeOpacity="0.4" fill="none" transform="rotate(120 48 48)"/>
+                <path d="M48 22 C48 22 30 40 30 52 C30 61.9 38.1 70 48 70 C57.9 70 66 61.9 66 52 C66 40 48 22 48 22Z" fill="#DC2626"/>
+                <path d="M40 44 C40 44 37 50 37 54 C37 54 36 48 40 44Z" fill="white" fillOpacity="0.3"/>
+              </svg>
+              <div>
+                <p className="text-sm font-black uppercase tracking-wider text-slate-900">Pascoto</p>
+                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#DC2626]">Portal Operacional</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <p className="text-xs font-semibold text-slate-700">📍 {currentUser.unit}</p>
+                <p className="text-[10px] text-slate-400">{currentUser.name}</p>
+              </div>
+              <button onClick={handleLogout} className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100">Sair</button>
             </div>
           </div>
 
-          <nav className="flex items-center gap-1">
-            <button onClick={() => setView("catalog")} className={`rounded-xl px-4 py-2 text-sm font-semibold ${view === "catalog" ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-              Catálogo
-            </button>
-            <button onClick={() => setView("cart")} className={`relative rounded-xl px-4 py-2 text-sm font-semibold ${view === "cart" ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-              Pedido
-              {cart.length > 0 && (
-                <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-[#DC2626] text-[10px] font-black text-white shadow">{cart.length}</span>
-              )}
-            </button>
-            <button onClick={() => { loadData(currentUser); setView("orders"); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${view === "orders" || view === "detail" ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-              Meus Pedidos
-            </button>
-            <button onClick={() => { loadLocalStock(currentUser); setView("estoque"); }} className={`rounded-xl px-4 py-2 text-sm font-semibold ${view === "estoque" ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
-              Estoque
-            </button>
-            <button onClick={handleLogout} className="ml-2 rounded-xl border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100">
-              Sair
-            </button>
+          {/* Navegação */}
+          <nav className="mt-3 flex items-center gap-1 overflow-x-auto">
+            {([
+              { key: "inicio", label: "🏠 Início", on: () => setView("inicio"), active: view === "inicio" },
+              { key: "estoque", label: "📦 Estoque", on: () => { loadLocalStock(currentUser); setView("estoque"); }, active: view === "estoque" },
+              { key: "solicitacoes", label: "📝 Solicitações", on: () => { loadData(currentUser); setView("orders"); }, active: ["orders", "detail", "catalog", "cart"].includes(view) },
+              { key: "remessas", label: "🚚 Remessas", on: () => { loadRemessas(currentUser); setView("remessas"); }, active: view === "remessas" },
+              { key: "historico", label: "📜 Histórico", on: () => setView("historico"), active: view === "historico" },
+            ] as const).map((t) => (
+              <button key={t.key} onClick={t.on}
+                className={`shrink-0 rounded-xl px-3.5 py-2 text-sm font-semibold transition ${t.active ? "bg-[#DC2626] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                {t.label}
+              </button>
+            ))}
           </nav>
         </div>
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6">
+
+        {/* ═══════════════ INÍCIO ═══════════════ */}
+        {view === "inicio" && (() => {
+          const hora = new Date().getHours();
+          const saud = hora < 12 ? "Bom dia" : hora < 18 ? "Boa tarde" : "Boa noite";
+          const nMateriais = new Set(localBatches.map((b) => b.materialCode)).size;
+          const nAguardando = pedidos.filter((p) => p.status === "Aguardando aprovação").length;
+          const nReceber = remessasList.filter((r) => !["Recebida", "Cancelada"].includes(r.status)).length;
+          const primeiroNome = currentUser.name.split(" ")[0];
+          return (
+            <div className="space-y-5">
+              <div>
+                <h1 className="text-2xl font-black text-slate-900">{saud}, {primeiroNome}</h1>
+                <p className="mt-0.5 text-sm text-slate-500">📍 Unidade: <span className="font-semibold text-slate-700">{currentUser.unit}</span></p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <button onClick={() => { loadLocalStock(currentUser); setView("estoque"); }}
+                  className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">📦 Estoque</p>
+                    <p className="mt-1 text-xs text-slate-500">{nMateriais} {nMateriais === 1 ? "material" : "materiais"} disponíveis</p>
+                  </div>
+                  <span className="rounded-lg bg-[#DC2626] px-3 py-1.5 text-xs font-bold text-white">Abrir</span>
+                </button>
+                <button onClick={() => { loadData(currentUser); setView("orders"); }}
+                  className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">📝 Solicitações</p>
+                    <p className="mt-1 text-xs text-slate-500">{nAguardando > 0 ? `${nAguardando} aguardando aprovação` : "Nenhuma pendente"}</p>
+                  </div>
+                  {nAguardando > 0 && <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-black text-amber-700">{nAguardando}</span>}
+                </button>
+                <button onClick={() => { loadRemessas(currentUser); setView("remessas"); }}
+                  className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">🚚 Remessas</p>
+                    <p className="mt-1 text-xs text-slate-500">{nReceber > 0 ? `${nReceber} aguardando recebimento` : "Nenhuma pendente"}</p>
+                  </div>
+                  {nReceber > 0 && <span className="rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-black text-indigo-700">{nReceber}</span>}
+                </button>
+                <button onClick={() => setView("historico")}
+                  className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">📜 Histórico</p>
+                    <p className="mt-1 text-xs text-slate-500">Solicitações e recebimentos</p>
+                  </div>
+                  <span className="text-slate-300">›</span>
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ═══════════════ CATALOG ═══════════════ */}
         {view === "catalog" && (
@@ -759,7 +844,7 @@ export default function PortalApp() {
                 <div className="flex gap-3">
                   <button onClick={() => setView("catalog")} className="flex-1 rounded-xl border border-slate-300 py-3 text-sm font-semibold text-slate-700">← Continuar Adicionando</button>
                   <button onClick={handleSubmitPedido} disabled={submitting} className="flex-[2] rounded-xl bg-[#DC2626] py-3 text-sm font-bold text-white shadow hover:bg-red-700 disabled:bg-slate-300">
-                    {submitting ? "Enviando..." : `✓ Enviar Pedido (${cart.length} materiais)`}
+                    {submitting ? "Enviando..." : `✓ Enviar Solicitação (${cart.length} materiais)`}
                   </button>
                 </div>
               </div>
@@ -771,8 +856,8 @@ export default function PortalApp() {
         {view === "orders" && (
           <div>
             <div className="mb-5 flex items-center justify-between">
-              <h1 className="text-xl font-bold text-slate-900">Meus Pedidos — {currentUser.unit}</h1>
-              <button onClick={() => { setView("catalog"); setCart([]); }} className="rounded-xl bg-[#DC2626] px-4 py-2.5 text-sm font-bold text-white">+ Novo Pedido</button>
+              <h1 className="text-xl font-bold text-slate-900">Minhas Solicitações — {currentUser.unit}</h1>
+              <button onClick={() => { setView("catalog"); setCart([]); }} className="rounded-xl bg-[#DC2626] px-4 py-2.5 text-sm font-bold text-white">+ Nova Solicitação</button>
             </div>
 
             {loadingData ? (
@@ -780,7 +865,7 @@ export default function PortalApp() {
             ) : pedidos.length === 0 ? (
               <div className="rounded-2xl border-2 border-dashed border-slate-200 py-20 text-center">
                 <p className="text-lg font-semibold text-slate-400">Nenhum pedido ainda</p>
-                <button onClick={() => setView("catalog")} className="mt-4 rounded-xl bg-[#DC2626] px-6 py-2.5 text-sm font-bold text-white">Fazer Primeiro Pedido</button>
+                <button onClick={() => setView("catalog")} className="mt-4 rounded-xl bg-[#DC2626] px-6 py-2.5 text-sm font-bold text-white">Fazer Primeira Solicitação</button>
               </div>
             ) : (
               <div className="space-y-3">
@@ -977,6 +1062,94 @@ export default function PortalApp() {
                         <p className="text-2xl font-black text-slate-900">{g.total}</p>
                         <p className="text-[10px] text-slate-400">disponível</p>
                       </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ═══════════════ REMESSAS ═══════════════ */}
+        {view === "remessas" && (
+          <div>
+            <div className="mb-5">
+              <h1 className="text-xl font-bold text-slate-900">Remessas — {currentUser.unit}</h1>
+              <p className="text-sm text-slate-500">Remessas enviadas pela Matriz para a sua localidade.</p>
+            </div>
+            {remessasList.length === 0 ? (
+              <div className="rounded-2xl border-2 border-dashed border-slate-200 py-16 text-center">
+                <p className="text-lg font-semibold text-slate-400">Nenhuma remessa</p>
+                <p className="mt-1 text-sm text-slate-400">As remessas enviadas para {currentUser.unit} aparecem aqui.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {remessasList.map((r) => {
+                  const ped = pedidos.find((p) => p.id === r.pedidoId);
+                  const podeConfirmar = ped && ped.status === "Enviado" && ped.recebimentoStatus !== "confirmado" && ped.recebimentoStatus !== "divergencia";
+                  const finalizada = r.status === "Recebida";
+                  return (
+                    <div key={r.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="mb-3 flex items-center justify-between">
+                        <div>
+                          <p className="font-bold text-slate-900">{r.numero}</p>
+                          <p className="text-xs text-slate-400">{r.createdAt}</p>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${finalizada ? "bg-emerald-50 text-emerald-700" : r.status === "Cancelada" ? "bg-slate-100 text-slate-500" : "bg-indigo-50 text-indigo-700"}`}>{r.status}</span>
+                      </div>
+                      <div className="space-y-1 rounded-xl bg-slate-50 p-3">
+                        {r.itens.map((it, i) => (
+                          <div key={i} className="flex items-center justify-between text-sm">
+                            <span className="min-w-0 truncate text-slate-700">{it.materialName} <span className="text-xs text-slate-400">· lote {it.lote}{it.validade ? ` · val ${it.validade}` : ""}</span></span>
+                            <span className="shrink-0 font-bold text-slate-900">{it.quantidade}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {ped && ped.recebimentoStatus === "confirmado" && !finalizada && (
+                        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-center text-xs font-semibold text-emerald-700">✓ Recebimento confirmado — aguardando a Matriz finalizar</p>
+                      )}
+                      {ped && ped.recebimentoStatus === "divergencia" && (
+                        <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-700">⚠ Divergência em análise pela Gestão</p>
+                      )}
+                      {podeConfirmar && (
+                        <div className="mt-3 flex gap-2">
+                          <button disabled={confirmingReceipt} onClick={() => { if (confirm(`Confirmar recebimento da remessa ${r.numero}?`)) handleConfirmReceipt(ped.id); }}
+                            className="flex-1 rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">✓ Confirmar recebimento</button>
+                          <button onClick={() => openDivergence(ped.id)}
+                            className="rounded-xl border border-amber-300 px-4 py-2.5 text-sm font-semibold text-amber-700 hover:bg-amber-50">Divergência</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ═══════════════ HISTÓRICO ═══════════════ */}
+        {view === "historico" && (() => {
+          const finalizados = pedidos.filter((p) => ["Recebido", "Cancelado", "Rejeitado"].includes(p.status));
+          return (
+            <div>
+              <div className="mb-5">
+                <h1 className="text-xl font-bold text-slate-900">Histórico — {currentUser.unit}</h1>
+                <p className="text-sm text-slate-500">Solicitações finalizadas e remessas recebidas.</p>
+              </div>
+              {finalizados.length === 0 ? (
+                <div className="rounded-2xl border-2 border-dashed border-slate-200 py-16 text-center">
+                  <p className="text-lg font-semibold text-slate-400">Sem histórico ainda</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {finalizados.map((p) => (
+                    <button key={p.id} onClick={() => { setSelectedPedido(p); setView("detail"); }}
+                      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300">
+                      <div>
+                        <p className="font-semibold text-slate-900">{p.numero}</p>
+                        <p className="text-xs text-slate-400">{p.createdAt}</p>
+                      </div>
+                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_CFG[p.status].bg} ${STATUS_CFG[p.status].color} ${STATUS_CFG[p.status].border}`}>{p.status}</span>
                     </button>
                   ))}
                 </div>
