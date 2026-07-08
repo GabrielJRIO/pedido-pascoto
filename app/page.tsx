@@ -110,6 +110,8 @@ function LoginScreen({ onLogin }: { onLogin: (user: PortalUser) => void }) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const row = data as any;
     if (row.password !== password) { setError("Senha incorreta."); return; }
+    // Carimba o último acesso (fire-and-forget — não bloqueia o login)
+    supabase.from("pedido_users").update({ last_login: new Date().toISOString() }).eq("id", row.id).then(() => {});
     onLogin({ id: row.id, username: row.username, name: row.name, unit: row.unit, password: row.password, active: row.active, localityType: row.locality_type || "unidade" });
   }
 
