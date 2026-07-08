@@ -49,6 +49,25 @@ type PortalRemessa = {
   itens: { materialName: string; quantidade: number; lote: string; validade: string }[];
 };
 
+// ─── Status de validade (a partir de ISO 'yyyy-mm-dd') ───
+function batchDays(iso: string): number {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return 9999;
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  const [y, m, d] = iso.slice(0, 10).split("-").map(Number);
+  const e = new Date(y, m - 1, d); e.setHours(0, 0, 0, 0);
+  return Math.ceil((e.getTime() - t.getTime()) / 86400000);
+}
+function batchStatus(iso: string): { label: string; cls: string; dot: string; expired: boolean; soon: boolean; days: number } {
+  const d = batchDays(iso);
+  if (d < 0) return { label: "Vencido", cls: "bg-red-100 text-red-700", dot: "🔴", expired: true, soon: false, days: d };
+  if (d <= 30) return { label: "Vence em breve", cls: "bg-amber-100 text-amber-700", dot: "🟠", expired: false, soon: true, days: d };
+  return { label: "Válido", cls: "bg-emerald-100 text-emerald-700", dot: "🟢", expired: false, soon: false, days: d };
+}
+function fmtVal(iso: string): string {
+  const m = iso?.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "—";
+}
+
 type PedidoStatus =
   | "Aguardando aprovação"
   | "Aprovado"
@@ -302,8 +321,10 @@ export default function PortalApp() {
 
   function openUso(materialCode: string) {
     const lotes = localBatches.filter((b) => b.materialCode === materialCode);
+    // FEFO (já ordenado por validade) — auto-seleciona o 1º lote NÃO vencido
+    const recomendado = lotes.find((b) => !batchStatus(b.expiresAt).expired) ?? lotes[0];
     setUsoMat(materialCode);
-    setUsoLoteId(lotes[0]?.id ?? ""); // FEFO (já vem ordenado) — auto-seleciona o primeiro
+    setUsoLoteId(recomendado?.id ?? "");
     setUsoQty("");
     setUsoObs("");
   }
@@ -313,6 +334,7 @@ export default function PortalApp() {
     if (!currentUser || !usoMat) return;
     const lote = localBatches.find((b) => b.id === usoLoteId);
     if (!lote) { showToast("Selecione o lote.", false); return; }
+    if (batchStatus(lote.expiresAt).expired) { showToast("Lote vencido — uso bloqueado. Escolha outro lote.", false); return; }
     const qty = Number(usoQty);
     if (!qty || qty <= 0) { showToast("Informe a quantidade usada.", false); return; }
     if (qty > lote.quantity) { showToast(`Máximo disponível neste lote: ${lote.quantity}`, false); return; }
@@ -1029,10 +1051,10 @@ export default function PortalApp() {
         {/* ═══════════════ ESTOQUE LOCAL ═══════════════ */}
         {view === "estoque" && (() => {
           const grupos = Object.values(
-            localBatches.reduce((acc: Record<string, { code: string; name: string; total: number; lotes: number }>, b) => {
-              acc[b.materialCode] ??= { code: b.materialCode, name: b.materialName, total: 0, lotes: 0 };
+            localBatches.reduce((acc: Record<string, { code: string; name: string; total: number; lotes: LocalBatch[] }>, b) => {
+              acc[b.materialCode] ??= { code: b.materialCode, name: b.materialName, total: 0, lotes: [] };
               acc[b.materialCode].total += b.quantity;
-              acc[b.materialCode].lotes += 1;
+              acc[b.materialCode].lotes.push(b);
               return acc;
             }, {}),
           ).sort((a, b) => a.name.localeCompare(b.name));
@@ -1051,19 +1073,36 @@ export default function PortalApp() {
                 </div>
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {grupos.map((g) => (
-                    <button key={g.code} onClick={() => openUso(g.code)}
-                      className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition hover:border-[#DC2626] hover:shadow">
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold text-slate-900">{g.name}</p>
-                        <p className="text-xs text-slate-400">{g.lotes} lote{g.lotes > 1 ? "s" : ""} · toque para usar</p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        <p className="text-2xl font-black text-slate-900">{g.total}</p>
-                        <p className="text-[10px] text-slate-400">disponível</p>
-                      </div>
-                    </button>
-                  ))}
+                  {grupos.map((g) => {
+                    // Pior status entre os lotes do material (vencido > vence em breve > válido)
+                    const pior = g.lotes.reduce((acc, l) => {
+                      const s = batchStatus(l.expiresAt);
+                      if (s.expired) return "expired";
+                      if (s.soon && acc !== "expired") return "soon";
+                      return acc;
+                    }, "ok" as "expired" | "soon" | "ok");
+                    const badge = pior === "expired" ? { cls: "bg-red-100 text-red-700", dot: "🔴", label: "Vencido" }
+                      : pior === "soon" ? { cls: "bg-amber-100 text-amber-700", dot: "🟠", label: "Vence em breve" }
+                      : { cls: "bg-emerald-100 text-emerald-700", dot: "🟢", label: "Válido" };
+                    const unico = g.lotes.length === 1 ? g.lotes[0] : null;
+                    return (
+                      <button key={g.code} onClick={() => openUso(g.code)}
+                        className={`rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:shadow ${pior === "expired" ? "border-red-200" : pior === "soon" ? "border-amber-200" : "border-slate-200 hover:border-[#DC2626]"}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold text-slate-900">{g.name}</p>
+                            <p className="text-xs text-slate-400">{g.total} {g.total === 1 ? "unidade" : "unidades"} · {g.lotes.length} lote{g.lotes.length > 1 ? "s" : ""}</p>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.dot} {badge.label}</span>
+                        </div>
+                        {unico ? (
+                          <p className="mt-2 text-xs text-slate-500">Lote {unico.lot} · validade {fmtVal(unico.expiresAt)}</p>
+                        ) : (
+                          <p className="mt-2 text-xs font-semibold text-[#DC2626]">Toque para escolher o lote →</p>
+                        )}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -1164,9 +1203,11 @@ export default function PortalApp() {
         const lotes = localBatches.filter((b) => b.materialCode === usoMat);
         const nome = lotes[0]?.materialName ?? usoMat;
         const loteSel = localBatches.find((b) => b.id === usoLoteId);
+        const recomendadoId = (lotes.find((b) => !batchStatus(b.expiresAt).expired) ?? lotes[0])?.id;
+        const selStatus = loteSel ? batchStatus(loteSel.expiresAt) : null;
         return (
           <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/50 sm:items-center" onClick={() => setUsoMat(null)}>
-            <div className="w-full max-w-md rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+            <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
               <div className="mb-4 flex items-start justify-between">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-[#DC2626]">Registrar uso</p>
@@ -1175,23 +1216,36 @@ export default function PortalApp() {
                 <button onClick={() => setUsoMat(null)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">✕</button>
               </div>
 
-              {/* Seleção de lote (auto se só houver 1) */}
+              {/* Seleção de lote — vencido é bloqueado; recomendado é o que vence antes */}
               <label className="mb-1 block text-xs font-semibold text-slate-500">
                 {lotes.length > 1 ? "Escolha o lote *" : "Lote"}
               </label>
               <div className="space-y-1.5">
-                {lotes.map((l, i) => (
-                  <button key={l.id} type="button" onClick={() => setUsoLoteId(l.id)}
-                    className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-sm transition ${usoLoteId === l.id ? "border-[#DC2626] bg-red-50 ring-1 ring-red-200" : "border-slate-200 hover:border-slate-300"}`}>
-                    <span>
-                      <span className="font-semibold text-slate-800">Lote {l.lot}</span>
-                      {i === 0 && lotes.length > 1 && <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-bold text-green-700">vence antes</span>}
-                      <span className="block text-xs text-slate-500">Validade {l.expiresAt ? l.expiresAt.split("-").reverse().join("/") : "—"}</span>
-                    </span>
-                    <span className="shrink-0 font-bold text-slate-900">{l.quantity} un</span>
-                  </button>
-                ))}
+                {lotes.map((l) => {
+                  const st = batchStatus(l.expiresAt);
+                  const isRec = l.id === recomendadoId && !st.expired;
+                  return (
+                    <button key={l.id} type="button" disabled={st.expired}
+                      onClick={() => { if (!st.expired) setUsoLoteId(l.id); }}
+                      className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-sm transition ${st.expired ? "cursor-not-allowed border-red-200 bg-red-50/40 opacity-70" : usoLoteId === l.id ? "border-[#DC2626] bg-red-50 ring-1 ring-red-200" : "border-slate-200 hover:border-slate-300"}`}>
+                      <span className="min-w-0">
+                        <span className="font-semibold text-slate-800">Lote {l.lot}</span>
+                        <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${st.cls}`}>{st.dot} {st.label}</span>
+                        {isRec && lotes.length > 1 && <span className="ml-1 rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-bold text-green-700">Usar primeiro — vence antes</span>}
+                        <span className="block text-xs text-slate-500">Validade {fmtVal(l.expiresAt)}{st.expired ? " · uso bloqueado" : ""}</span>
+                      </span>
+                      <span className="shrink-0 font-bold text-slate-900">{l.quantity} un</span>
+                    </button>
+                  );
+                })}
               </div>
+
+              {selStatus?.soon && (
+                <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-700">⚠ Atenção: lote vence em breve ({selStatus.days} dia{selStatus.days === 1 ? "" : "s"}). Priorize o uso.</p>
+              )}
+              {selStatus?.expired && (
+                <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">🔴 Lote vencido — uso bloqueado. Escolha outro lote.</p>
+              )}
 
               <label className="mb-1 mt-4 block text-xs font-semibold text-slate-500">Quantidade usada *</label>
               <input type="number" min={1} max={loteSel?.quantity} value={usoQty}
@@ -1205,9 +1259,9 @@ export default function PortalApp() {
               <input value={usoObs} onChange={(e) => setUsoObs(e.target.value)} placeholder="Ex.: usado no setor X"
                 className="w-full rounded-xl border border-slate-300 px-4 py-2.5 text-sm" />
 
-              <button disabled={usando} onClick={handleUsarMaterial}
+              <button disabled={usando || !loteSel || !!selStatus?.expired} onClick={handleUsarMaterial}
                 className="mt-5 w-full rounded-xl bg-[#DC2626] py-3 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50">
-                {usando ? "Registrando..." : "Confirmar uso"}
+                {usando ? "Registrando..." : selStatus?.expired ? "Lote vencido — bloqueado" : "Confirmar uso"}
               </button>
             </div>
           </div>
@@ -1216,7 +1270,7 @@ export default function PortalApp() {
 
       {/* Footer */}
       <footer className="mt-10 border-t border-slate-200 py-6 text-center text-xs text-slate-400">
-        Desenvolvido por <span className="font-semibold text-slate-600">GRP Tecnologia</span> · Portal de Pedidos Pascoto
+        Desenvolvido por <span className="font-semibold text-slate-600">GRP Tecnologia</span> · Portal Operacional Pascoto
       </footer>
     </div>
   );
