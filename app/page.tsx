@@ -47,6 +47,8 @@ type PortalRemessa = {
   status: string;
   createdAt: string;
   pedidoId: string | null;
+  recebimentoStatus: string;   // '' | 'confirmado' | 'divergencia'
+  recebidoPorDestino: string;
   itens: { materialName: string; quantidade: number; lote: string; validade: string }[];
 };
 
@@ -244,6 +246,7 @@ export default function PortalApp() {
   const [confirmingReceipt, setConfirmingReceipt] = useState(false);
   const [divergenceOpen, setDivergenceOpen] = useState(false);
   const [divergencePedidoId, setDivergencePedidoId] = useState<string | null>(null);
+  const [divergenceRemessa, setDivergenceRemessa] = useState<PortalRemessa | null>(null);
   const [divergenceType, setDivergenceType] = useState("");
   const [divergenceDesc, setDivergenceDesc] = useState("");
   const [savingDivergence, setSavingDivergence] = useState(false);
@@ -287,7 +290,7 @@ export default function PortalApp() {
   async function loadRemessas(user: PortalUser) {
     const { data, error } = await supabase
       .from("remessas")
-      .select("id,numero,status,created_at,pedido_id, remessa_itens(material_name,quantidade,lote,validade)")
+      .select("id,numero,status,created_at,pedido_id,recebimento_status,recebido_por_destino, remessa_itens(material_name,quantidade,lote,validade)")
       .eq("destino", user.unit)
       .order("created_at", { ascending: false })
       .limit(50);
@@ -299,6 +302,8 @@ export default function PortalApp() {
       status: r.status,
       createdAt: r.created_at ? new Date(r.created_at).toLocaleString("pt-BR") : "",
       pedidoId: r.pedido_id ?? null,
+      recebimentoStatus: r.recebimento_status || "",
+      recebidoPorDestino: r.recebido_por_destino || "",
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       itens: (r.remessa_itens ?? []).map((i: any) => ({
         materialName: i.material_name, quantidade: i.quantidade, lote: i.lote || "—", validade: i.validade || "",
@@ -516,6 +521,63 @@ export default function PortalApp() {
     showToast("Recebimento confirmado! A Matriz vai finalizar.");
   }
 
+  // Destino confirma o recebimento da REMESSA. NÃO mexe em estoque nem finaliza —
+  // apenas SINALIZA à Gestão que conferiu e está em conformidade. A baixa é feita pela Matriz.
+  async function handleConfirmRemessa(rem: PortalRemessa) {
+    if (!currentUser) return;
+    setConfirmingReceipt(true);
+    const now = new Date().toISOString();
+    const { error } = await supabase.from("remessas").update({
+      recebimento_status: "confirmado",
+      recebido_por_destino: currentUser.name,
+      recebido_em_destino: now,
+    }).eq("id", rem.id);
+    // Se a remessa nasceu de uma solicitação, sinaliza também no pedido (consistência)
+    if (!error && rem.pedidoId) {
+      await supabase.from("pedidos").update({
+        recebimento_status: "confirmado", recebido_por: currentUser.name, recebido_em: now,
+      }).eq("id", rem.pedidoId);
+    }
+    setConfirmingReceipt(false);
+    if (error) { showToast("Não foi possível confirmar. Tente novamente.", false); return; }
+    setRemessasList((prev) => prev.map((r) => r.id === rem.id ? { ...r, recebimentoStatus: "confirmado", recebidoPorDestino: currentUser.name } : r));
+    showToast("Recebimento confirmado! A Matriz vai finalizar.");
+  }
+
+  function openDivergenceRemessa(rem: PortalRemessa) {
+    setDivergenceRemessa(rem);
+    setDivergenceType("");
+    setDivergenceDesc("");
+    setDivergenceOpen(true);
+  }
+
+  // Divergência NÃO finaliza nem mexe em estoque — abre pendência pra Gestão analisar.
+  async function handleReportDivergenceRemessa() {
+    if (!currentUser || !divergenceRemessa) return;
+    if (!divergenceType) { showToast("Escolha o tipo de divergência.", false); return; }
+    setSavingDivergence(true);
+    const { error } = await supabase.from("pedido_divergencias").insert({
+      pedido_id: divergenceRemessa.pedidoId,
+      remessa_id: divergenceRemessa.id,
+      tipo: divergenceType,
+      descricao: divergenceDesc.trim() || null,
+      status: "aberta",
+      criado_por: currentUser.name,
+    });
+    if (!error) {
+      await supabase.from("remessas").update({ recebimento_status: "divergencia" }).eq("id", divergenceRemessa.id);
+      if (divergenceRemessa.pedidoId) {
+        await supabase.from("pedidos").update({ recebimento_status: "divergencia" }).eq("id", divergenceRemessa.pedidoId);
+      }
+    }
+    setSavingDivergence(false);
+    if (error) { showToast("Não foi possível registrar. Tente novamente.", false); return; }
+    setRemessasList((prev) => prev.map((r) => r.id === divergenceRemessa.id ? { ...r, recebimentoStatus: "divergencia" } : r));
+    setDivergenceOpen(false);
+    setDivergenceRemessa(null);
+    showToast("Divergência registrada. A Gestão vai analisar.");
+  }
+
   function openDivergence(pedidoId: string) {
     setDivergencePedidoId(pedidoId);
     setDivergenceType("");
@@ -597,11 +659,12 @@ export default function PortalApp() {
               className="mt-2 w-full rounded-xl border border-slate-300 px-4 py-3 text-sm" />
 
             <div className="mt-5 flex gap-2">
-              <button type="button" onClick={() => setDivergenceOpen(false)}
+              <button type="button" onClick={() => { setDivergenceOpen(false); setDivergenceRemessa(null); }}
                 className="flex-1 rounded-xl border border-slate-300 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">
                 Cancelar
               </button>
-              <button type="button" disabled={savingDivergence} onClick={handleReportDivergence}
+              <button type="button" disabled={savingDivergence}
+                onClick={divergenceRemessa ? handleReportDivergenceRemessa : handleReportDivergence}
                 className="flex-1 rounded-xl bg-amber-600 py-3 text-sm font-bold text-white hover:bg-amber-700 disabled:opacity-50">
                 {savingDivergence ? "Registrando..." : "Registrar divergência"}
               </button>
@@ -1188,9 +1251,9 @@ export default function PortalApp() {
             ) : (
               <div className="space-y-3">
                 {remessasList.map((r) => {
-                  const ped = pedidos.find((p) => p.id === r.pedidoId);
-                  const podeConfirmar = ped && ped.status === "Enviado" && ped.recebimentoStatus !== "confirmado" && ped.recebimentoStatus !== "divergencia";
-                  const finalizada = r.status === "Recebida";
+                  const finalizada = r.status === "Recebida" || r.status === "Cancelada";
+                  // Pode conferir enquanto a remessa não foi finalizada pela Matriz e ainda não houve sinal
+                  const podeConfirmar = !finalizada && r.recebimentoStatus !== "confirmado" && r.recebimentoStatus !== "divergencia";
                   return (
                     <div key={r.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                       <div className="mb-3 flex items-center justify-between">
@@ -1208,18 +1271,25 @@ export default function PortalApp() {
                           </div>
                         ))}
                       </div>
-                      {ped && ped.recebimentoStatus === "confirmado" && !finalizada && (
-                        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-center text-xs font-semibold text-emerald-700">✓ Recebimento confirmado — aguardando a Matriz finalizar</p>
+                      {r.recebimentoStatus === "confirmado" && !finalizada && (
+                        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-center text-xs font-semibold text-emerald-700">
+                          ✓ Recebimento conferido{r.recebidoPorDestino ? ` por ${r.recebidoPorDestino}` : ""} — aguardando a Matriz finalizar
+                        </p>
                       )}
-                      {ped && ped.recebimentoStatus === "divergencia" && (
-                        <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-700">⚠ Divergência em análise pela Gestão</p>
+                      {r.recebimentoStatus === "divergencia" && (
+                        <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-center text-xs font-semibold text-amber-700">⚠ Divergência registrada — em análise pela Gestão</p>
                       )}
                       {podeConfirmar && (
-                        <div className="mt-3 flex gap-2">
-                          <button disabled={confirmingReceipt} onClick={() => { if (confirm(`Confirmar recebimento da remessa ${r.numero}?`)) handleConfirmReceipt(ped.id); }}
-                            className="flex-1 rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">✓ Confirmar recebimento</button>
-                          <button onClick={() => openDivergence(ped.id)}
-                            className="rounded-xl border border-amber-300 px-4 py-2.5 text-sm font-semibold text-amber-700 hover:bg-amber-50">Divergência</button>
+                        <div className="mt-3 rounded-xl border-2 border-emerald-200 bg-emerald-50 p-3">
+                          <p className="mb-2 text-center text-xs font-semibold text-emerald-800">Confira os materiais e os lotes acima. Está tudo em conformidade?</p>
+                          <div className="flex gap-2">
+                            <button disabled={confirmingReceipt} onClick={() => { if (confirm(`Confirmar que recebeu a remessa ${r.numero} em conformidade?`)) handleConfirmRemessa(r); }}
+                              className="flex-1 rounded-xl bg-emerald-600 py-2.5 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+                              {confirmingReceipt ? "Confirmando..." : "✓ Sim, recebi tudo certo"}
+                            </button>
+                            <button onClick={() => openDivergenceRemessa(r)}
+                              className="rounded-xl border border-amber-300 bg-white px-4 py-2.5 text-sm font-semibold text-amber-700 hover:bg-amber-50">⚠ Divergência</button>
+                          </div>
                         </div>
                       )}
                     </div>
