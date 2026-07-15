@@ -54,6 +54,8 @@ type PortalRemessa = {
 
 type UsoLocal = {
   id: string;
+  tipo: string;      // 'Entrada' | 'Saída'
+  motivo: string;    // 'Uso local' | ''
   materialName: string;
   quantidade: number;
   lote: string;
@@ -299,19 +301,20 @@ export default function PortalApp() {
     setLoadingData(false);
   }
 
-  // Usos locais registrados na própria localidade (trilha de auditoria da unidade)
+  // Todas as movimentações da própria localidade — entradas, saídas/baixas e usos locais
   async function loadUsos(user: PortalUser) {
     const { data, error } = await supabase
       .from("movements")
-      .select("id,material_name,quantity,responsible,note,created_at, movement_batches(lot)")
+      .select("id,type,motivo,material_name,quantity,responsible,note,created_at, movement_batches(lot)")
       .eq("unit", user.unit)
-      .eq("motivo", "Uso local")
       .order("created_at", { ascending: false })
-      .limit(100);
-    if (error) { console.warn("Histórico de usos indisponível:", error.message); return; }
+      .limit(150);
+    if (error) { console.warn("Histórico de movimentações indisponível:", error.message); return; }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     setUsos(((data ?? []) as any[]).map((m) => ({
       id: m.id,
+      tipo: m.type || "",
+      motivo: m.motivo || "",
       materialName: m.material_name || "—",
       quantidade: Number(m.quantity || 0),
       lote: m.movement_batches?.[0]?.lot ?? "—",
@@ -1341,13 +1344,19 @@ export default function PortalApp() {
         {view === "historico" && (() => {
           type Ev = { key: string; iso: string; when: string; tipo: string; cor: string; titulo: string; linha1: string; linha2: string };
           const evs: Ev[] = [];
-          // Usos locais (o que foi consumido na unidade)
-          usos.forEach((u) => evs.push({
-            key: "u" + u.id, iso: u.whenISO, when: u.when, tipo: "Uso local", cor: "violet",
-            titulo: `${u.materialName} — ${u.quantidade} un`,
-            linha1: `Lote ${u.lote}`,
-            linha2: `👤 ${u.responsavel}${u.obs ? ` · ${u.obs}` : ""}`,
-          }));
+          // Movimentações da unidade: uso local, saídas/baixas e entradas
+          usos.forEach((u) => {
+            const isUso = u.motivo === "Uso local";
+            const isSaida = u.tipo === "Saída";
+            evs.push({
+              key: "u" + u.id, iso: u.whenISO, when: u.when,
+              tipo: isUso ? "Uso local" : isSaida ? "Baixa de estoque" : "Entrada",
+              cor: isUso ? "violet" : isSaida ? "red" : "green",
+              titulo: `${u.materialName} — ${isSaida ? "−" : "+"}${u.quantidade} un`,
+              linha1: `Lote ${u.lote}`,
+              linha2: `👤 ${u.responsavel}${u.obs ? ` · ${u.obs}` : ""}`,
+            });
+          });
           // Remessas recebidas
           remessasList.filter((r) => r.status === "Recebida").forEach((r) => evs.push({
             key: "r" + r.id, iso: r.createdAt, when: r.createdAt, tipo: "Remessa recebida", cor: "emerald",
@@ -1361,13 +1370,19 @@ export default function PortalApp() {
             titulo: p.numero, linha1: `${p.itens.length} item(ns)`, linha2: p.solicitanteName ? `👤 ${p.solicitanteName}` : "",
           }));
           evs.sort((a, b) => String(b.iso).localeCompare(String(a.iso)));
-          const cor: Record<string, string> = { violet: "bg-violet-100 text-violet-700", emerald: "bg-emerald-100 text-emerald-700", slate: "bg-slate-100 text-slate-600" };
+          const cor: Record<string, string> = {
+            violet: "bg-violet-100 text-violet-700",
+            emerald: "bg-emerald-100 text-emerald-700",
+            green: "bg-green-100 text-green-700",
+            red: "bg-red-100 text-red-700",
+            slate: "bg-slate-100 text-slate-600",
+          };
 
           return (
             <div>
               <div className="mb-5">
                 <h1 className="text-xl font-bold text-slate-900">Histórico — {currentUser.unit}</h1>
-                <p className="text-sm text-slate-500">Tudo que aconteceu na sua localidade: usos, recebimentos e solicitações.</p>
+                <p className="text-sm text-slate-500">Tudo que aconteceu na sua localidade: entradas, baixas, usos, recebimentos e solicitações.</p>
               </div>
               {evs.length === 0 ? (
                 <div className="rounded-2xl border-2 border-dashed border-slate-200 py-16 text-center">
