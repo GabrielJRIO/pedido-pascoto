@@ -52,6 +52,17 @@ type PortalRemessa = {
   itens: { materialName: string; quantidade: number; lote: string; validade: string }[];
 };
 
+type UsoLocal = {
+  id: string;
+  materialName: string;
+  quantidade: number;
+  lote: string;
+  responsavel: string;
+  obs: string;
+  when: string;
+  whenISO: string;
+};
+
 // ─── Status de validade (a partir de ISO 'yyyy-mm-dd') ───
 function batchDays(iso: string): number {
   if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return 9999;
@@ -232,6 +243,7 @@ export default function PortalApp() {
   const [view, setView] = useState<"inicio" | "catalog" | "cart" | "orders" | "detail" | "estoque" | "remessas" | "historico">("inicio");
   const [localBatches, setLocalBatches] = useState<LocalBatch[]>([]);
   const [remessasList, setRemessasList] = useState<PortalRemessa[]>([]);
+  const [usos, setUsos] = useState<UsoLocal[]>([]);
   const [usoMat, setUsoMat] = useState<string | null>(null);
   const [usoLoteId, setUsoLoteId] = useState("");
   const [usoQty, setUsoQty] = useState("");
@@ -283,7 +295,31 @@ export default function PortalApp() {
     }
     await loadLocalStock(user);
     await loadRemessas(user);
+    await loadUsos(user);
     setLoadingData(false);
+  }
+
+  // Usos locais registrados na própria localidade (trilha de auditoria da unidade)
+  async function loadUsos(user: PortalUser) {
+    const { data, error } = await supabase
+      .from("movements")
+      .select("id,material_name,quantity,responsible,note,created_at, movement_batches(lot)")
+      .eq("unit", user.unit)
+      .eq("motivo", "Uso local")
+      .order("created_at", { ascending: false })
+      .limit(100);
+    if (error) { console.warn("Histórico de usos indisponível:", error.message); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setUsos(((data ?? []) as any[]).map((m) => ({
+      id: m.id,
+      materialName: m.material_name || "—",
+      quantidade: Number(m.quantity || 0),
+      lote: m.movement_batches?.[0]?.lot ?? "—",
+      responsavel: m.responsible || "não informado",
+      obs: m.note || "",
+      when: m.created_at ? new Date(m.created_at).toLocaleString("pt-BR") : "",
+      whenISO: m.created_at ?? "",
+    })));
   }
 
   // Remessas enviadas para a própria localidade
@@ -357,6 +393,7 @@ export default function PortalApp() {
     showToast("Uso registrado! Estoque atualizado.");
     setUsoMat(null);
     await loadLocalStock(currentUser);
+    await loadUsos(currentUser);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1302,28 +1339,53 @@ export default function PortalApp() {
 
         {/* ═══════════════ HISTÓRICO ═══════════════ */}
         {view === "historico" && (() => {
-          const finalizados = pedidos.filter((p) => ["Recebido", "Cancelado", "Rejeitado"].includes(p.status));
+          type Ev = { key: string; iso: string; when: string; tipo: string; cor: string; titulo: string; linha1: string; linha2: string };
+          const evs: Ev[] = [];
+          // Usos locais (o que foi consumido na unidade)
+          usos.forEach((u) => evs.push({
+            key: "u" + u.id, iso: u.whenISO, when: u.when, tipo: "Uso local", cor: "violet",
+            titulo: `${u.materialName} — ${u.quantidade} un`,
+            linha1: `Lote ${u.lote}`,
+            linha2: `👤 ${u.responsavel}${u.obs ? ` · ${u.obs}` : ""}`,
+          }));
+          // Remessas recebidas
+          remessasList.filter((r) => r.status === "Recebida").forEach((r) => evs.push({
+            key: "r" + r.id, iso: r.createdAt, when: r.createdAt, tipo: "Remessa recebida", cor: "emerald",
+            titulo: `${r.numero} — ${r.itens.length} item(ns)`,
+            linha1: r.itens.map((i) => `${i.materialName} (lote ${i.lote}) ×${i.quantidade}`).join(" · ").slice(0, 120),
+            linha2: r.recebidoPorDestino ? `👤 conferido por ${r.recebidoPorDestino}` : "",
+          }));
+          // Solicitações finalizadas
+          pedidos.filter((p) => ["Recebido", "Cancelado", "Rejeitado"].includes(p.status)).forEach((p) => evs.push({
+            key: "p" + p.id, iso: p.createdAt, when: p.createdAt, tipo: `Solicitação ${p.status}`, cor: "slate",
+            titulo: p.numero, linha1: `${p.itens.length} item(ns)`, linha2: p.solicitanteName ? `👤 ${p.solicitanteName}` : "",
+          }));
+          evs.sort((a, b) => String(b.iso).localeCompare(String(a.iso)));
+          const cor: Record<string, string> = { violet: "bg-violet-100 text-violet-700", emerald: "bg-emerald-100 text-emerald-700", slate: "bg-slate-100 text-slate-600" };
+
           return (
             <div>
               <div className="mb-5">
                 <h1 className="text-xl font-bold text-slate-900">Histórico — {currentUser.unit}</h1>
-                <p className="text-sm text-slate-500">Solicitações finalizadas e remessas recebidas.</p>
+                <p className="text-sm text-slate-500">Tudo que aconteceu na sua localidade: usos, recebimentos e solicitações.</p>
               </div>
-              {finalizados.length === 0 ? (
+              {evs.length === 0 ? (
                 <div className="rounded-2xl border-2 border-dashed border-slate-200 py-16 text-center">
                   <p className="text-lg font-semibold text-slate-400">Sem histórico ainda</p>
+                  <p className="mt-1 text-sm text-slate-400">Os usos de material e recebimentos aparecem aqui.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {finalizados.map((p) => (
-                    <button key={p.id} onClick={() => { setSelectedPedido(p); setView("detail"); }}
-                      className="flex w-full items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm hover:border-slate-300">
-                      <div>
-                        <p className="font-semibold text-slate-900">{p.numero}</p>
-                        <p className="text-xs text-slate-400">{p.createdAt}</p>
+                  {evs.map((e) => (
+                    <div key={e.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${cor[e.cor]}`}>{e.tipo}</span>
+                        <span className="text-xs text-slate-400">{e.when}</span>
                       </div>
-                      <span className={`rounded-full px-3 py-1 text-xs font-semibold ${STATUS_CFG[p.status].bg} ${STATUS_CFG[p.status].color} ${STATUS_CFG[p.status].border}`}>{p.status}</span>
-                    </button>
+                      <p className="mt-1.5 font-semibold text-slate-900">{e.titulo}</p>
+                      {e.linha1 && <p className="text-xs text-slate-500">{e.linha1}</p>}
+                      {e.linha2 && <p className="text-xs text-slate-400">{e.linha2}</p>}
+                    </div>
                   ))}
                 </div>
               )}
