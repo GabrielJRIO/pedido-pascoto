@@ -65,6 +65,11 @@ type UsoLocal = {
   whenISO: string;
 };
 
+// Normaliza para busca: sem acento, minúscula, sem espaço nas pontas.
+function semAcento(texto: string): string {
+  return (texto || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+}
+
 // ─── Status de validade (a partir de ISO 'yyyy-mm-dd') ───
 function batchDays(iso: string): number {
   if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return 9999;
@@ -654,8 +659,14 @@ export default function PortalApp() {
   }, [materials]);
 
   const filteredMaterials = useMemo(() => {
+    // Busca ignorando acento e caixa: quem está no posto digita com pressa,
+    // "hipodermica" tem que achar "AGULHA HIPODÉRMICA".
+    const termo = semAcento(search);
     return materials.filter((m) => {
-      const matchSearch = !search || m.name.toLowerCase().includes(search.toLowerCase()) || m.code.toLowerCase().includes(search.toLowerCase()) || m.category.toLowerCase().includes(search.toLowerCase());
+      const matchSearch = !termo
+        || semAcento(m.name).includes(termo)
+        || semAcento(m.code).includes(termo)
+        || semAcento(m.category).includes(termo);
       const matchCat = catFilter === "Todos" || m.category === catFilter;
       return matchSearch && matchCat;
     });
