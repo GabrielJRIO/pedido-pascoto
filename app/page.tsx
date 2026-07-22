@@ -8,7 +8,6 @@ import { supabase } from "@/lib/supabase";
 type PortalUser = {
   id: string;
   username: string;
-  password: string;
   name: string;
   unit: string;
   active: boolean;
@@ -157,20 +156,26 @@ function LoginScreen({ onLogin }: { onLogin: (user: PortalUser) => void }) {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const { data, error: err } = await supabase
-      .from("pedido_users")
-      .select("*")
-      .eq("username", username.trim().toLowerCase())
-      .eq("active", true)
-      .single();
-    setLoading(false);
-    if (err || !data) { setError("Usuário não encontrado ou inativo."); return; }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const row = data as any;
-    if (row.password !== password) { setError("Senha incorreta."); return; }
-    // Carimba o último acesso (fire-and-forget — não bloqueia o login)
-    supabase.from("pedido_users").update({ last_login: new Date().toISOString() }).eq("id", row.id).then(() => {});
-    onLogin({ id: row.id, username: row.username, name: row.name, unit: row.unit, password: row.password, active: row.active, localityType: row.locality_type || "unidade" });
+    // Login pela API server-side: a senha nunca é comparada no navegador, e a
+    // tabela pedido_users não é mais lida pela chave pública. A sessão volta
+    // num cookie HttpOnly assinado — o JS da página não a lê.
+    try {
+      const resp = await fetch("/api/portal/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      setLoading(false);
+      if (!resp.ok) {
+        setError(body?.error ?? "Não foi possível entrar. Tente novamente.");
+        return;
+      }
+      onLogin(body.user as PortalUser);
+    } catch {
+      setLoading(false);
+      setError("Sem conexão com o servidor. Tente novamente.");
+    }
   }
 
   return (
@@ -435,12 +440,35 @@ export default function PortalApp() {
   }
 
   function handleLogout() {
+    // Derruba o cookie de sessão no servidor; a limpeza local segue mesmo se a
+    // rede falhar (o cookie expira sozinho em 8h de qualquer forma).
+    fetch("/api/portal/logout", { method: "POST" }).catch(() => {});
     setCurrentUser(null);
     setCart([]);
     setView("catalog");
     setPedidos([]);
     setMaterials([]);
   }
+
+  // Restaura a sessão ao abrir a página: se o cookie assinado ainda vale, o
+  // posto não precisa logar de novo. Sem cookie, cai no LoginScreen.
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const resp = await fetch("/api/portal/me");
+        if (!vivo) return;
+        if (resp.ok) {
+          const body = await resp.json();
+          if (body?.user) handleLogin(body.user as PortalUser);
+        }
+      } catch {
+        /* sem sessão: segue no login */
+      }
+    })();
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Cart logic
   function addToCart(mat: CatalogMaterial, qty = 1) {
